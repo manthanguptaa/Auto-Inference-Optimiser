@@ -178,25 +178,22 @@ def _generate_step(prompt_tokens, model, cache, max_tokens, sampler):
 
     def _prefill(tokens, cache):
         """Process prompt tokens through the model, building up KV cache."""
-        with mx.stream(_generation_stream):
-            total = len(tokens)
-            processed = 0
-            while total - processed > 1:
-                n = min(PREFILL_STEP_SIZE, total - processed - 1)
-                model(tokens[:n][None], cache=cache)
-                mx.eval([c.state for c in cache])
-                tokens = tokens[n:]
-                processed += n
-                mx.clear_cache()
-            return tokens  # remaining (last) token
+        total = len(tokens)
+        processed = 0
+        while total - processed > 1:
+            n = min(PREFILL_STEP_SIZE, total - processed - 1)
+            model(tokens[:n][None], cache=cache)
+            mx.eval([c.state for c in cache])
+            tokens = tokens[n:]
+            processed += n
+        return tokens  # remaining (last) token
 
     def _decode_one(input_token, cache):
         """Single decode step: run model, argmax directly on logits (skip logprobs)."""
-        with mx.stream(_generation_stream):
-            logits = model(input_token[None], cache=cache)
-            logits = logits[:, -1, :]
-            y = mx.argmax(logits, axis=-1)
-            return y
+        logits = model(input_token[None], cache=cache)
+        logits = logits[:, -1, :]
+        y = mx.argmax(logits, axis=-1)
+        return y
 
     # === Prefill ===
     remaining = _prefill(prompt_tokens, cache)
