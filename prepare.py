@@ -18,14 +18,14 @@ from mlx_lm.sample_utils import make_sampler
 # Constants — fixed evaluation protocol
 # ============================================================
 
-# Model used for all benchmarks (small enough for any MacBook)
-BENCHMARK_MODEL = "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
+# Model used for all benchmarks — 3B model, memory-bandwidth bound on Apple Silicon
+BENCHMARK_MODEL = "mlx-community/Qwen2.5-3B-Instruct-4bit"
 
 # Generation budget per prompt
 MAX_TOKENS = 256
 
-# Number of benchmark runs to average over
-NUM_RUNS = 3
+# Number of benchmark runs to average over (2 to keep experiments ~3-4 min)
+NUM_RUNS = 2
 
 # Warmup runs before measurement (first run compiles Metal kernels)
 WARMUP_RUNS = 1
