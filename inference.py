@@ -14,7 +14,6 @@ import mlx.core as mx
 import mlx.nn as nn
 from mlx_lm.generate import generate_step
 from mlx_lm.models.cache import make_prompt_cache
-from mlx_lm.sample_utils import make_sampler
 
 # ============================================================
 # CONFIGURATION — the agent optimises these values
@@ -22,15 +21,9 @@ from mlx_lm.sample_utils import make_sampler
 
 # KV cache settings
 MAX_KV_SIZE = None          # None=unbounded, or int for rotating cache
-KV_BITS = None              # None=full precision, 4 or 8 for quantised KV cache
-KV_GROUP_SIZE = 64          # granularity of KV quantisation
 
 # Prefill settings
 PREFILL_STEP_SIZE = 2048    # tokens per prefill chunk
-
-# Sampling settings
-TEMP = 0.0                  # 0.0=argmax (fastest), higher=more random
-TOP_P = 1.0                 # nucleus sampling threshold (1.0=disabled with argmax)
 
 # Memory settings
 METAL_CACHE_LIMIT = 1024 * 1024 * 1024  # 1GB Metal buffer cache
@@ -38,14 +31,19 @@ METAL_CACHE_LIMIT = 1024 * 1024 * 1024  # 1GB Metal buffer cache
 # Generation settings
 MAX_TOKENS = 256            # max tokens to generate per prompt
 
+# Raw argmax sampler — avoids make_sampler overhead and temp/top_p checks
+_argmax_sampler = lambda x: mx.argmax(x, axis=-1)
+
 
 def generate_text(model, tokenizer, prompt: str) -> dict:
     """
-    Generate text using generate_step with a pre-built prompt cache.
+    Generate text using generate_step with streamlined decode loop.
+
+    generate_step yields (int, logprobs) — no need for isinstance checks.
+    Uses raw argmax lambda instead of make_sampler for zero overhead.
     """
     mx.set_cache_limit(METAL_CACHE_LIMIT)
 
-    # Ensure model weights are fully materialized on Metal
     if not getattr(model, "_weights_ready", False):
         mx.eval(model.parameters())
         model._weights_ready = True
@@ -57,8 +55,6 @@ def generate_text(model, tokenizer, prompt: str) -> dict:
         prompt_tokens = mx.array(tokenizer.encode(formatted))
     else:
         prompt_tokens = mx.array(formatted)
-
-    sampler = make_sampler(temp=TEMP, top_p=TOP_P)
 
     eos_token_id = tokenizer.eos_token_id
     if isinstance(eos_token_id, int):
@@ -73,47 +69,32 @@ def generate_text(model, tokenizer, prompt: str) -> dict:
             if token_str in tokenizer.added_tokens_encoder:
                 eos_token_id.add(tokenizer.added_tokens_encoder[token_str])
 
-    # Pre-build the KV cache to avoid allocation during generation
     prompt_cache = make_prompt_cache(model, max_kv_size=MAX_KV_SIZE)
-
     generated_tokens = []
 
-    # Time prefill
+    # Prefill + first token
     prefill_start = time.perf_counter()
 
     token_generator = generate_step(
         prompt_tokens,
         model,
         max_tokens=MAX_TOKENS,
-        sampler=sampler,
+        sampler=_argmax_sampler,
         prompt_cache=prompt_cache,
         prefill_step_size=PREFILL_STEP_SIZE,
-        kv_bits=KV_BITS,
-        kv_group_size=KV_GROUP_SIZE,
     )
 
-    # First token marks end of prefill
-    first_token, _ = next(token_generator)
-    if isinstance(first_token, mx.array):
-        mx.eval(first_token)
-        token_val = first_token.item()
-    else:
-        token_val = int(first_token)
+    token_val, _ = next(token_generator)
     prefill_time = time.perf_counter() - prefill_start
 
     if token_val not in eos_token_id:
         generated_tokens.append(token_val)
 
-    # Time generation
+    # Decode loop — generate_step yields ints, tight loop
     gen_start = time.perf_counter()
 
     if token_val not in eos_token_id:
-        for token, _ in token_generator:
-            if isinstance(token, mx.array):
-                mx.eval(token)
-                token_val = token.item()
-            else:
-                token_val = int(token)
+        for token_val, _ in token_generator:
             if token_val in eos_token_id:
                 break
             generated_tokens.append(token_val)
