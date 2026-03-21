@@ -11,6 +11,7 @@ add speculative decoding, change generation loops, etc.
 
 import time
 import mlx.core as mx
+import mlx.nn as nn
 from mlx_lm.generate import generate_step
 from mlx_lm.models.cache import make_prompt_cache
 from mlx_lm.sample_utils import make_sampler
@@ -43,6 +44,11 @@ def generate_text(model, tokenizer, prompt: str) -> dict:
     Generate text using generate_step with a pre-built prompt cache.
     """
     mx.set_cache_limit(METAL_CACHE_LIMIT)
+
+    # Ensure model weights are fully materialized on Metal
+    if not getattr(model, "_weights_ready", False):
+        mx.eval(model.parameters())
+        model._weights_ready = True
 
     messages = [{"role": "user", "content": prompt}]
     formatted = tokenizer.apply_chat_template(messages, add_generation_prompt=True)
