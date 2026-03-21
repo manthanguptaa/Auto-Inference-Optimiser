@@ -191,20 +191,19 @@ def _generate_step(prompt_tokens, model, cache, max_tokens, sampler):
             return tokens  # remaining (last) token
 
     def _decode_one(input_token, cache):
-        """Single decode step: run model, sample next token."""
+        """Single decode step: run model, argmax directly on logits (skip logprobs)."""
         with mx.stream(_generation_stream):
             logits = model(input_token[None], cache=cache)
             logits = logits[:, -1, :]
-            logprobs = logits - mx.logsumexp(logits, keepdims=True)
-            y = sampler(logprobs)
-            return y, logprobs.squeeze(0)
+            y = mx.argmax(logits, axis=-1)
+            return y
 
     # === Prefill ===
     remaining = _prefill(prompt_tokens, cache)
 
     # First decode (last prompt token)
-    y, logprobs = _decode_one(remaining, cache)
-    mx.async_eval(y, logprobs)
+    y = _decode_one(remaining, cache)
+    mx.async_eval(y)
     mx.eval(y)
 
     # === Decode loop with async pipelining ===
@@ -212,19 +211,19 @@ def _generate_step(prompt_tokens, model, cache, max_tokens, sampler):
     while True:
         # Start computing next token while we yield current
         if n != max_tokens:
-            next_y, next_logprobs = _decode_one(y, cache)
-            mx.async_eval(next_y, next_logprobs)
+            next_y = _decode_one(y, cache)
+            mx.async_eval(next_y)
 
         if n == max_tokens:
             break
 
-        yield y.item(), logprobs
+        yield y.item(), None
 
         # Periodic memory cleanup
         if n % 256 == 0:
             mx.clear_cache()
 
-        y, logprobs = next_y, next_logprobs
+        y = next_y
         n += 1
 
 
