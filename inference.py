@@ -9,11 +9,9 @@ KV cache settings, prefill chunking, memory management, prompt formatting,
 add speculative decoding, change generation loops, etc.
 """
 
-import time
 import mlx.core as mx
-import mlx.nn as nn
-from mlx_lm.generate import generate_step
-from mlx_lm.models.cache import make_prompt_cache
+from mlx_lm import stream_generate
+from mlx_lm.sample_utils import make_sampler
 
 # ============================================================
 # CONFIGURATION — the agent optimises these values
@@ -21,99 +19,104 @@ from mlx_lm.models.cache import make_prompt_cache
 
 # KV cache settings
 MAX_KV_SIZE = None          # None=unbounded, or int for rotating cache
+KV_BITS = None              # None=full precision, 4 or 8 for quantised KV cache
+KV_GROUP_SIZE = 64          # granularity of KV quantisation
 
 # Prefill settings
 PREFILL_STEP_SIZE = 2048    # tokens per prefill chunk
 
+# Sampling settings
+TEMP = 0.7                  # 0.0=argmax (fastest), higher=more random
+TOP_P = 0.9                 # nucleus sampling threshold
+TOP_K = 0                   # 0=disabled, else restrict to top-K tokens
+MIN_P = 0.0                 # minimum probability relative to top token
+REPETITION_PENALTY = 1.0    # 1.0=disabled
+REPETITION_CONTEXT_SIZE = 20
+
 # Memory settings
-METAL_CACHE_LIMIT = 1024 * 1024 * 1024  # 1GB Metal buffer cache
+METAL_CACHE_LIMIT = None    # None=default, or bytes for mx.set_cache_limit()
 
 # Generation settings
 MAX_TOKENS = 256            # max tokens to generate per prompt
 
-# Raw argmax sampler — avoids make_sampler overhead and temp/top_p checks
-_argmax_sampler = lambda x: mx.argmax(x, axis=-1)
+
+def setup_memory():
+    """Configure Metal memory settings. Called once before generation."""
+    if METAL_CACHE_LIMIT is not None:
+        mx.set_cache_limit(METAL_CACHE_LIMIT)
+
+
+def build_sampler():
+    """Build the token sampler from current config."""
+    return make_sampler(
+        temp=TEMP,
+        top_p=TOP_P,
+    )
+
+
+def format_prompt(tokenizer, prompt: str) -> str:
+    """Format raw prompt using the model's chat template."""
+    messages = [{"role": "user", "content": prompt}]
+    return tokenizer.apply_chat_template(
+        messages, add_generation_prompt=True
+    )
 
 
 def generate_text(model, tokenizer, prompt: str) -> dict:
     """
-    Generate text using generate_step with streamlined decode loop.
+    Generate text from a prompt and return results with metrics.
 
-    generate_step yields (int, logprobs) — no need for isinstance checks.
-    Uses raw argmax lambda instead of make_sampler for zero overhead.
+    This is the function that prepare.py calls for benchmarking.
+    The agent can rewrite this entirely — the only contract is:
+      Input:  model, tokenizer, prompt (str)
+      Output: dict with keys: text, generation_tps, prompt_tps,
+              peak_memory_gb, generation_tokens, prompt_tokens
+
+    Args:
+        model: Loaded MLX model
+        tokenizer: Loaded tokenizer
+        prompt: Raw user prompt string
+
+    Returns:
+        dict with generation results and performance metrics
     """
-    mx.set_cache_limit(METAL_CACHE_LIMIT)
+    setup_memory()
 
-    if not getattr(model, "_weights_ready", False):
-        mx.eval(model.parameters())
-        model._weights_ready = True
+    formatted = format_prompt(tokenizer, prompt)
+    sampler = build_sampler()
 
-    messages = [{"role": "user", "content": prompt}]
-    formatted = tokenizer.apply_chat_template(messages, add_generation_prompt=True)
+    output_text = ""
+    final_resp = None
 
-    if isinstance(formatted, str):
-        prompt_tokens = mx.array(tokenizer.encode(formatted))
-    else:
-        prompt_tokens = mx.array(formatted)
-
-    eos_token_id = tokenizer.eos_token_id
-    if isinstance(eos_token_id, int):
-        eos_token_id = {eos_token_id}
-    elif isinstance(eos_token_id, list):
-        eos_token_id = set(eos_token_id)
-    else:
-        eos_token_id = set()
-
-    if hasattr(tokenizer, "added_tokens_encoder"):
-        for token_str in ["<|endoftext|>", "<|im_end|>", "<|end|>"]:
-            if token_str in tokenizer.added_tokens_encoder:
-                eos_token_id.add(tokenizer.added_tokens_encoder[token_str])
-
-    prompt_cache = make_prompt_cache(model, max_kv_size=MAX_KV_SIZE)
-    generated_tokens = []
-
-    # Prefill + first token
-    prefill_start = time.perf_counter()
-
-    token_generator = generate_step(
-        prompt_tokens,
+    for resp in stream_generate(
         model,
+        tokenizer,
+        formatted,
         max_tokens=MAX_TOKENS,
-        sampler=_argmax_sampler,
-        prompt_cache=prompt_cache,
+        sampler=sampler,
+        max_kv_size=MAX_KV_SIZE,
+        kv_bits=KV_BITS,
+        kv_group_size=KV_GROUP_SIZE,
         prefill_step_size=PREFILL_STEP_SIZE,
-    )
+    ):
+        output_text += resp.text
+        final_resp = resp
 
-    token_val, _ = next(token_generator)
-    prefill_time = time.perf_counter() - prefill_start
-
-    if token_val not in eos_token_id:
-        generated_tokens.append(token_val)
-
-    # Decode loop — generate_step yields ints, tight loop
-    gen_start = time.perf_counter()
-
-    if token_val not in eos_token_id:
-        for token_val, _ in token_generator:
-            if token_val in eos_token_id:
-                break
-            generated_tokens.append(token_val)
-
-    gen_time = time.perf_counter() - gen_start
-
-    text = tokenizer.decode(generated_tokens)
-
-    num_prompt = len(prompt_tokens)
-    num_generated = len(generated_tokens)
-    prompt_tps = num_prompt / prefill_time if prefill_time > 0 else 0
-    gen_tps = num_generated / gen_time if gen_time > 0 else 0
-    peak_mem = mx.get_peak_memory() / 1e9
+    if final_resp is None:
+        return {
+            "text": "",
+            "generation_tps": 0.0,
+            "prompt_tps": 0.0,
+            "peak_memory_gb": 0.0,
+            "generation_tokens": 0,
+            "prompt_tokens": 0,
+        }
 
     return {
-        "text": text,
-        "generation_tps": gen_tps,
-        "prompt_tps": prompt_tps,
-        "peak_memory_gb": peak_mem,
-        "generation_tokens": num_generated,
-        "prompt_tokens": num_prompt,
+        "text": output_text,
+        "generation_tps": final_resp.generation_tps,
+        "prompt_tps": final_resp.prompt_tps,
+        "peak_memory_gb": final_resp.peak_memory,
+        "generation_tokens": final_resp.generation_tokens,
+        "prompt_tokens": final_resp.prompt_tokens,
     }
