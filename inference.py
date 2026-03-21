@@ -12,6 +12,7 @@ add speculative decoding, change generation loops, etc.
 import time
 import mlx.core as mx
 from mlx_lm.generate import generate_step
+from mlx_lm.models.cache import make_prompt_cache
 from mlx_lm.sample_utils import make_sampler
 
 # ============================================================
@@ -39,10 +40,9 @@ MAX_TOKENS = 256            # max tokens to generate per prompt
 
 def generate_text(model, tokenizer, prompt: str) -> dict:
     """
-    Generate text using generate_step directly, bypassing stream_generate overhead.
+    Generate text using generate_step with a pre-built prompt cache.
     """
-    if METAL_CACHE_LIMIT is not None:
-        mx.set_cache_limit(METAL_CACHE_LIMIT)
+    mx.set_cache_limit(METAL_CACHE_LIMIT)
 
     messages = [{"role": "user", "content": prompt}]
     formatted = tokenizer.apply_chat_template(messages, add_generation_prompt=True)
@@ -62,11 +62,13 @@ def generate_text(model, tokenizer, prompt: str) -> dict:
     else:
         eos_token_id = set()
 
-    # Also check for additional stop tokens
     if hasattr(tokenizer, "added_tokens_encoder"):
         for token_str in ["<|endoftext|>", "<|im_end|>", "<|end|>"]:
             if token_str in tokenizer.added_tokens_encoder:
                 eos_token_id.add(tokenizer.added_tokens_encoder[token_str])
+
+    # Pre-build the KV cache to avoid allocation during generation
+    prompt_cache = make_prompt_cache(model, max_kv_size=MAX_KV_SIZE)
 
     generated_tokens = []
 
@@ -78,14 +80,14 @@ def generate_text(model, tokenizer, prompt: str) -> dict:
         model,
         max_tokens=MAX_TOKENS,
         sampler=sampler,
-        max_kv_size=MAX_KV_SIZE,
+        prompt_cache=prompt_cache,
         prefill_step_size=PREFILL_STEP_SIZE,
         kv_bits=KV_BITS,
         kv_group_size=KV_GROUP_SIZE,
     )
 
     # First token marks end of prefill
-    first_token, first_logprobs = next(token_generator)
+    first_token, _ = next(token_generator)
     if isinstance(first_token, mx.array):
         mx.eval(first_token)
         token_val = first_token.item()
@@ -100,7 +102,7 @@ def generate_text(model, tokenizer, prompt: str) -> dict:
     gen_start = time.perf_counter()
 
     if token_val not in eos_token_id:
-        for token, logprobs in token_generator:
+        for token, _ in token_generator:
             if isinstance(token, mx.array):
                 mx.eval(token)
                 token_val = token.item()
@@ -112,7 +114,6 @@ def generate_text(model, tokenizer, prompt: str) -> dict:
 
     gen_time = time.perf_counter() - gen_start
 
-    # Decode
     text = tokenizer.decode(generated_tokens)
 
     num_prompt = len(prompt_tokens)
