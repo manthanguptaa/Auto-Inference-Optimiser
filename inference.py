@@ -31,7 +31,7 @@ TEMP = 0.0                  # 0.0=argmax (fastest), higher=more random
 TOP_P = 1.0                 # nucleus sampling threshold (1.0=disabled with argmax)
 
 # Memory settings
-METAL_CACHE_LIMIT = None    # None=default, or bytes for mx.metal.set_cache_limit()
+METAL_CACHE_LIMIT = 1024 * 1024 * 1024  # 1GB Metal buffer cache
 
 # Generation settings
 MAX_TOKENS = 256            # max tokens to generate per prompt
@@ -42,7 +42,7 @@ def generate_text(model, tokenizer, prompt: str) -> dict:
     Generate text using generate_step directly, bypassing stream_generate overhead.
     """
     if METAL_CACHE_LIMIT is not None:
-        mx.metal.set_cache_limit(METAL_CACHE_LIMIT)
+        mx.set_cache_limit(METAL_CACHE_LIMIT)
 
     messages = [{"role": "user", "content": prompt}]
     formatted = tokenizer.apply_chat_template(messages, add_generation_prompt=True)
