@@ -18,8 +18,8 @@ from mlx_lm.sample_utils import make_sampler
 # Constants — fixed evaluation protocol
 # ============================================================
 
-# Model used for all benchmarks — 3B model, memory-bandwidth bound on Apple Silicon
-BENCHMARK_MODEL = "mlx-community/Qwen2.5-3B-Instruct-4bit"
+# Model used for all benchmarks (small enough for any MacBook)
+BENCHMARK_MODEL = "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
 
 # Generation budget per prompt
 MAX_TOKENS = 256
