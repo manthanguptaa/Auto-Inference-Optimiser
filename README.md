@@ -4,14 +4,18 @@ An autonomous agent that optimises LLM inference speed on Apple Silicon, inspire
 
 Point an AI coding agent at this repo and let it run experiments overnight — it hill-climbs on tokens/sec by modifying the inference pipeline, using git commits as experiment tracking.
 
-## Results: Claude Opus 4.6 Optimisation Run
+## Results: Claude Opus 4.6 Optimisation Runs
 
 **Hardware:** MacBook Pro M4, 48GB RAM
-**Model:** `mlx-community/Qwen2.5-0.5B-Instruct-4bit` (0.5B params, 4-bit)
 **Agent:** Claude Opus 4.6 via Claude Code
-**Experiments:** 16 total, 5 kept, 11 reverted
 
-### Summary
+We ran two rounds of experiments — first on a 0.5B model (config-tuning), then restructured the project and ran on a 3B model (deep inference internals).
+
+---
+
+### Round 1: Qwen2.5-0.5B-Instruct-4bit (config tuning)
+
+**16 experiments, 5 kept, 11 reverted**
 
 | Metric | Baseline | Optimised | Change |
 |---|---|---|---|
@@ -19,9 +23,9 @@ Point an AI coding agent at this repo and let it run experiments overnight — i
 | `avg_prompt_tps` | 2,467.7 | 3,180.0 | **+28.9%** |
 | `avg_peak_memory_gb` | 0.529 | 0.547 | +3.4% |
 | `avg_perplexity` | 8.49 | 6.05 | **-28.7% (better)** |
-| `quality_pass` | True | True | -- |
 
-### Full Experiment Log
+<details>
+<summary>Full experiment log (0.5B)</summary>
 
 | # | Experiment | gen_tps | prompt_tps | ppl | Decision | Notes |
 |---|---|---|---|---|---|---|
@@ -43,19 +47,53 @@ Point an AI coding agent at this repo and let it run experiments overnight — i
 | 15 | Streamlined decode + raw argmax sampler | **434.9** | 3,180.0 | 6.05 | **KEEP** | Same speed, -19 lines — simplicity wins |
 | 16 | MAX_KV_SIZE=512 rotating cache | 434.5 | 3,347.4 | 6.05 | REVERT | Rotating cache overhead negated savings |
 
+</details>
+
+---
+
+### Round 2: Qwen2.5-3B-Instruct-4bit (deep inference internals)
+
+For Round 2, we restructured the project to inline the full inference pipeline (KV cache, generate loop, attention) into `inference.py`, giving the agent a much deeper attack surface. We also switched to a 3B model that's actually memory-bandwidth bound.
+
+**5 experiments, 2 kept, 3 reverted**
+
+| Metric | Baseline | Optimised | Change |
+|---|---|---|---|
+| `avg_generation_tps` | 118.4 | 118.5 | +0.1% |
+| `avg_prompt_tps` | 612.1 | 630.4 | **+3.0%** |
+| `avg_peak_memory_gb` | 2.262 | 2.262 | 0% |
+| `avg_perplexity` | 4.55 | 4.55 | 0% |
+
+<details>
+<summary>Full experiment log (3B)</summary>
+
+| # | Experiment | gen_tps | prompt_tps | ppl | Decision | Notes |
+|---|---|---|---|---|---|---|
+| 0 | **Baseline** (inlined pipeline, argmax) | 118.4 | 612.1 | 4.55 | -- | Starting point |
+| 1 | KV cache step size 512 | 118.6 | 602.1 | 4.55 | REVERT | Within noise |
+| 2 | Metal cache 4GB + prefill step 1024 | 118.5 | 588.1 | 4.55 | REVERT | prompt_tps dropped |
+| 3 | Skip logprobs (argmax on raw logits) | **118.7** | 589.8 | 4.55 | **KEEP** | Cleaner code, removes logsumexp over 151k vocab |
+| 4 | Remove generation stream + clear_cache | **118.5** | **630.4** | 4.55 | **KEEP** | +3% prefill from removing sync overhead |
+| 5 | Speculative decoding (0.5B draft) | 58.0 | 605.1 | 7.27 | REVERT | -51% — draft/target disagreement + double memory reads |
+
+</details>
+
+---
+
 ### Key Findings
 
-1. **Biggest win: argmax sampling (+8.1%).** Switching from temp=0.7/top_p=0.9 to deterministic argmax was the single largest speedup. The sampling path (nucleus sampling, temperature scaling) has real overhead.
+**What worked:**
+1. **Argmax sampling was the biggest single win (+8.1% on 0.5B).** Nucleus sampling has real overhead — the temp scaling, probability sorting, and cumsum are expensive.
+2. **Bypassing framework overhead helps on small models.** Using `generate_step` directly instead of `stream_generate` saved ~1% by avoiding per-token response object creation.
+3. **Removing unnecessary computation matters.** Skipping logprobs (logsumexp over 151k vocab) and removing stream context managers reduced overhead.
 
-2. **generate_step's pipelining is excellent.** Our custom forward loop that skipped logprobs was 22% *slower* because it lost generate_step's `mx.async_eval` pipelining — it pre-computes token N+1 while yielding token N. Don't fight the framework.
+**What didn't work (and why):**
+1. **Speculative decoding was 51% slower.** On unified memory, running two models (0.5B + 3B) sequentially doubles memory bandwidth usage. The draft/target disagreement rate was too high for the math to work.
+2. **KV cache quantisation was 17% slower on 0.5B.** The quantise/dequantise overhead vastly exceeds bandwidth savings on small models. Would likely help on >7B models.
+3. **Python-level optimisations (GC disable, singletons) had no effect.** The bottleneck is Metal GPU compute, not Python.
+4. **The 3B model hit a hard memory bandwidth wall at ~118 tok/s.** At 4-bit quantisation, the model is ~2GB. Reading all weights per token at 118 tok/s = ~236 GB/s, close to the M4's theoretical bandwidth. No software trick can bypass physics.
 
-3. **KV cache quantisation hurts small models.** 8-bit KV cache was 17% slower on 0.5B — the quantise/dequantise overhead vastly exceeds any memory bandwidth savings at this scale.
-
-4. **Python-level optimisations have diminishing returns.** GC disabling, singleton caching, async eval changes — all within noise or harmful. The bottleneck is Metal GPU compute, not Python.
-
-5. **Metal cache limit has a sweet spot.** 1GB helped slightly, 4GB hurt. Over-allocating the Metal buffer pool can increase GC pressure.
-
-6. **Simpler code at same performance is a valid improvement.** The final inference.py is 30% shorter than intermediate versions while maintaining peak throughput.
+**The meta-lesson:** The autoresearch pattern works best when the search space is deep (modifiable architecture, not just config). But even with deep access, hardware limits set a hard ceiling. The most interesting finding isn't any single optimisation — it's learning exactly where the wall is and why.
 
 ## How It Works
 
@@ -80,19 +118,18 @@ The core pattern: **lock the evaluation, open the implementation, let an AI agen
 | File | Role | Agent Can Edit? |
 |---|---|---|
 | `prepare.py` | Evaluation harness, benchmarks, quality gate | No |
-| `inference.py` | The full inference pipeline | **Yes** |
+| `inference.py` | Full inference pipeline (KV cache, generate loop, attention) | **Yes** |
 | `program.md` | Agent instructions | No |
 
 ## The Optimisation Search Space
 
-The agent can modify anything in `inference.py`:
+In v2, `inference.py` contains inlined implementations the agent can modify:
 
-- **KV cache**: size limits, quantisation (4-bit/8-bit), group size
-- **Sampling**: temperature, top-p, top-k, min-p, repetition penalty
-- **Prefill**: chunk size, memory management
-- **Metal memory**: cache limits, buffer management
-- **Architecture**: custom generate loops, speculative decoding, prompt caching
-- **Compilation**: `mx.compile` for kernel fusion
+- **KVCache class** — allocation strategy, step size, quantisation, sliding windows
+- **scaled_dot_product_attention()** — attention computation, sparse patterns
+- **_generate_step()** — prefill chunking, decode pipelining, async eval strategy
+- **Configuration** — Metal cache limits, prefill step size, max tokens
+- **Speculative decoding** — draft model integration, verification logic
 
 ## Metrics
 
@@ -121,24 +158,18 @@ cat run.log
 
 ## Run with an AI Agent
 
-Point any AI coding agent (Claude Code, Codex, Cursor, etc.) at this repo with `program.md` as the system prompt. The agent will:
-
-1. Create a branch
-2. Run baseline evaluation
-3. Start the optimisation loop
-4. Keep going until you stop it
-
 ```bash
 # Example with Claude Code
 claude --system-prompt program.md
 ```
 
-## Benchmark Model
+## Benchmark Models
 
-Uses `mlx-community/Qwen2.5-0.5B-Instruct-4bit` — a 0.5B parameter model in 4-bit quantisation (~350MB). Small enough for any MacBook, large enough to produce meaningful inference patterns.
+- **v1:** `mlx-community/Qwen2.5-0.5B-Instruct-4bit` (0.5B, ~350MB) — compute-bound
+- **v2:** `mlx-community/Qwen2.5-3B-Instruct-4bit` (3B, ~2GB) — memory-bandwidth-bound
 
 ## Requirements
 
 - macOS with Apple Silicon (M1/M2/M3/M4)
 - Python 3.10+
-- ~2GB free RAM
+- ~4GB free RAM (for 3B model)
