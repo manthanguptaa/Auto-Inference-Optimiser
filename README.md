@@ -4,14 +4,14 @@ An autonomous agent that optimises LLM inference speed on Apple Silicon, inspire
 
 Point an AI coding agent at this repo and let it run experiments overnight — it hill-climbs on tokens/sec by modifying the inference pipeline, using git commits as experiment tracking.
 
-## Results: Claude Opus 4.6 Optimisation Run
+## Results: Claude Opus 4.6 Optimisation Runs
+
+### Run 1: 0.5B Model (main branch)
 
 **Hardware:** MacBook Pro M4, 48GB RAM
 **Model:** `mlx-community/Qwen2.5-0.5B-Instruct-4bit` (0.5B params, 4-bit)
 **Agent:** Claude Opus 4.6 via Claude Code
 **Experiments:** 16 total, 5 kept, 11 reverted
-
-### Summary
 
 | Metric | Baseline | Optimised | Change |
 |---|---|---|---|
@@ -21,7 +21,8 @@ Point an AI coding agent at this repo and let it run experiments overnight — i
 | `avg_perplexity` | 8.49 | 6.05 | **-28.7% (better)** |
 | `quality_pass` | True | True | -- |
 
-### Full Experiment Log
+<details>
+<summary>Full experiment log (0.5B)</summary>
 
 | # | Experiment | gen_tps | prompt_tps | ppl | Decision | Notes |
 |---|---|---|---|---|---|---|
@@ -43,19 +44,61 @@ Point an AI coding agent at this repo and let it run experiments overnight — i
 | 15 | Streamlined decode + raw argmax sampler | **434.9** | 3,180.0 | 6.05 | **KEEP** | Same speed, -19 lines — simplicity wins |
 | 16 | MAX_KV_SIZE=512 rotating cache | 434.5 | 3,347.4 | 6.05 | REVERT | Rotating cache overhead negated savings |
 
-### Key Findings
+</details>
 
-1. **Biggest win: argmax sampling (+8.1%).** Switching from temp=0.7/top_p=0.9 to deterministic argmax was the single largest speedup. The sampling path (nucleus sampling, temperature scaling) has real overhead.
+### Run 2: 3B Model (this branch)
 
-2. **generate_step's pipelining is excellent.** Our custom forward loop that skipped logprobs was 22% *slower* because it lost generate_step's `mx.async_eval` pipelining — it pre-computes token N+1 while yielding token N. Don't fight the framework.
+**Hardware:** MacBook Pro M4, 48GB RAM
+**Model:** `mlx-community/Qwen2.5-3B-Instruct-4bit` (3B params, 4-bit)
+**Agent:** Claude Opus 4.6 via Claude Code
+**Experiments:** 16 total, 3 kept, 13 reverted
 
-3. **KV cache quantisation hurts small models.** 8-bit KV cache was 17% slower on 0.5B — the quantise/dequantise overhead vastly exceeds any memory bandwidth savings at this scale.
+| Metric | Baseline | Optimised | Change |
+|---|---|---|---|
+| `avg_generation_tps` | 115.96 | 119.33 | **+2.9%** |
+| `avg_prompt_tps` | 634.68 | 628.01 | -1.1% |
+| `avg_peak_memory_gb` | 2.278 | 2.278 | 0% |
+| `avg_perplexity` | 6.47 | 4.55 | **-29.7% (better)** |
+| `quality_pass` | True | True | -- |
 
-4. **Python-level optimisations have diminishing returns.** GC disabling, singleton caching, async eval changes — all within noise or harmful. The bottleneck is Metal GPU compute, not Python.
+<details>
+<summary>Full experiment log (3B)</summary>
 
-5. **Metal cache limit has a sweet spot.** 1GB helped slightly, 4GB hurt. Over-allocating the Metal buffer pool can increase GC pressure.
+| # | Experiment | gen_tps | prompt_tps | mem_gb | ppl | Decision | Notes |
+|---|---|---|---|---|---|---|---|
+| 0 | **Baseline** (stream_generate, temp=0.7, top_p=0.9) | 115.96 | 634.68 | 2.278 | 6.47 | -- | Starting point |
+| 1 | Argmax sampling (temp=0.0, top_p=1.0) | **118.86** | 625.51 | 2.278 | 4.55 | **KEEP** | +2.5% — removes sampling overhead |
+| 2 | Custom generate loop (generate_step) | 105.6 | 77.8 | 1.768 | 4.55 | REVERT | -8.9% — manual timing conflates prefill+decode |
+| 3 | Metal cache limit 1GB | 118.94 | 625.08 | 2.278 | 4.55 | REVERT | Within noise (+0.07%) |
+| 4 | Metal cache limit 2GB | **119.03** | 637.34 | 2.278 | 4.55 | **KEEP** | Marginal gen_tps, +1.9% prompt_tps |
+| 5 | Prefill step size 512 | 119.24 | 627.28 | 2.278 | 4.55 | REVERT | Within noise, prompt_tps dropped |
+| 6 | Prefill step size 4096 | 119.14 | 628.77 | 2.278 | 4.55 | REVERT | Within noise |
+| 7 | 8-bit KV cache quantisation | 109.88 | 586.35 | 2.278 | 4.32 | REVERT | -7.7% — quant/dequant overhead exceeds bandwidth savings |
+| 8 | MAX_KV_SIZE=1024 rotating cache | 119.25 | 632.41 | 2.278 | 4.55 | REVERT | Within noise (+0.18%) |
+| 9 | Minimal code (singleton sampler, join) | **119.33** | 628.01 | 2.278 | 4.55 | **KEEP** | Same speed, 60% less code |
+| 10 | Metal cache limit 4GB | 119.45 | 610.24 | 2.278 | 4.55 | REVERT | prompt_tps dropped |
+| 11 | Remove Metal cache limit | 119.33 | 614.04 | 2.278 | 4.55 | REVERT | prompt_tps dropped vs 2GB limit |
+| 12 | Disable Python GC during generation | 119.21 | 622.58 | 2.278 | 4.55 | REVERT | GC not a bottleneck |
+| 13 | 4-bit KV cache quantisation | 120.51 | 595.26 | 2.266 | 69,405 | REVERT | **Quality gate FAILED** — perplexity exploded |
+| 14 | Pre-materialize model weights | 118.32 | 638.74 | 2.278 | 4.55 | REVERT | -0.8% — extra mx.eval overhead |
+| 15 | Prefill step size 1024 | 118.77 | 637.90 | 2.278 | 4.55 | REVERT | Within noise |
+| 16 | MAX_TOKENS=128 | 119.08 | 634.50 | 2.116 | 4.79 | REVERT | gen_tps within noise |
 
-6. **Simpler code at same performance is a valid improvement.** The final inference.py is 30% shorter than intermediate versions while maintaining peak throughput.
+</details>
+
+### Key Findings: 0.5B vs 3B
+
+1. **Smaller models have more optimisation headroom.** The 0.5B model gained +9.5% while the 3B model only gained +2.9%. The 3B model at ~119 tok/s is already at ~87% of the M4's theoretical memory bandwidth ceiling (~273 GB/s), leaving almost no room for software optimisation.
+
+2. **Argmax sampling is universally the biggest win.** +8.1% on 0.5B, +2.5% on 3B. Nucleus sampling (top-p) has real per-token overhead that scales with vocab size.
+
+3. **KV cache quantisation hurts at all scales tested.** 8-bit was -17% on 0.5B and -7.7% on 3B. 4-bit on 3B destroyed output quality (perplexity 69,405). The quant/dequant kernels add more overhead than they save in bandwidth for 4-bit weight models.
+
+4. **Custom generate loops are dangerous.** On 0.5B, bypassing stream_generate for generate_step directly gave +1%. On 3B, the same approach was -8.9% because manual timing conflated prefill and decode phases. The framework's internal metrics are more accurate.
+
+5. **The memory bandwidth wall is real.** A 3B 4-bit model is ~2GB. At 119 tok/s, that's 238 GB/s — close to the M4's theoretical 273 GB/s. No amount of Python-level optimisation can push past this hardware limit.
+
+6. **Metal cache limit has a sweet spot per model.** 1GB was optimal for 0.5B (~350MB model), 2GB was optimal for 3B (~2GB model). The cache should roughly match the model size.
 
 ## How It Works
 
@@ -133,12 +176,8 @@ Point any AI coding agent (Claude Code, Codex, Cursor, etc.) at this repo with `
 claude --system-prompt program.md
 ```
 
-## Benchmark Model
-
-Uses `mlx-community/Qwen2.5-0.5B-Instruct-4bit` — a 0.5B parameter model in 4-bit quantisation (~350MB). Small enough for any MacBook, large enough to produce meaningful inference patterns.
-
 ## Requirements
 
 - macOS with Apple Silicon (M1/M2/M3/M4)
 - Python 3.10+
-- ~2GB free RAM
+- ~4GB free RAM (for 3B model) or ~2GB (for 0.5B model)
