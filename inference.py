@@ -34,7 +34,7 @@ REPETITION_PENALTY = 1.0    # 1.0=disabled
 REPETITION_CONTEXT_SIZE = 20
 
 # Memory settings
-METAL_CACHE_LIMIT = None    # None=default, or bytes for mx.set_cache_limit()
+METAL_CACHE_LIMIT = 2 * 1024 * 1024 * 1024  # 2GB Metal cache limit
 
 # Generation settings
 MAX_TOKENS = 256            # max tokens to generate per prompt
