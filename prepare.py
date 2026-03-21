@@ -91,14 +91,16 @@ def compute_perplexity(model, tokenizer, text: str) -> float:
     shift_logits = logits[:, :-1, :]
     shift_labels = token_array[:, 1:]
 
-    # Cross-entropy loss
-    log_probs = mx.log_softmax(shift_logits, axis=-1)
-    token_log_probs = mx.take_along_axis(
-        log_probs, shift_labels[:, :, None], axis=-1
-    ).squeeze(-1)
+    # Cross-entropy loss (returns per-token nats)
+    import mlx.nn as nn
+    per_token_loss = nn.losses.cross_entropy(
+        shift_logits.reshape(-1, shift_logits.shape[-1]),
+        shift_labels.reshape(-1),
+        reduction="none",
+    )
 
-    avg_neg_log_prob = -mx.mean(token_log_probs).item()
-    perplexity = float(mx.exp(mx.array(avg_neg_log_prob)).item())
+    avg_loss = mx.mean(per_token_loss).item()
+    perplexity = float(mx.exp(mx.array(avg_loss)).item())
 
     return perplexity
 
