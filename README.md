@@ -15,10 +15,11 @@ Point an AI coding agent at this repo and let it run experiments overnight — i
 
 | Metric | Baseline | Optimised | Change |
 |---|---|---|---|
-| `avg_generation_tps` | 397.0 | 434.9 | **+9.5%** |
-| `avg_prompt_tps` | 2,467.7 | 3,180.0 | **+28.9%** |
-| `avg_peak_memory_gb` | 0.529 | 0.547 | +3.4% |
-| `avg_perplexity` | 8.49 | 6.05 | **-28.7% (better)** |
+| `avg_generation_tps` | 394.63 | 434.9 | **+10.2%** |
+| `avg_prompt_tps` | 2,691.26 | 3,180.0 | **+18.2%** |
+| `avg_peak_memory_gb` | 0.544 | 0.547 | +0.6% |
+| `avg_perplexity` | 6.38 | 6.05 | -5.2% (better) |
+| `sanity_check` | 0.80 | -- | 4/5 tasks pass |
 | `quality_pass` | True | True | -- |
 
 <details>
@@ -55,10 +56,11 @@ Point an AI coding agent at this repo and let it run experiments overnight — i
 
 | Metric | Baseline | Optimised | Change |
 |---|---|---|---|
-| `avg_generation_tps` | 115.96 | 119.33 | **+2.9%** |
-| `avg_prompt_tps` | 634.68 | 628.01 | -1.1% |
+| `avg_generation_tps` | 115.45 | 119.33 | **+3.4%** |
+| `avg_prompt_tps` | 645.45 | 628.01 | -2.7% |
 | `avg_peak_memory_gb` | 2.278 | 2.278 | 0% |
-| `avg_perplexity` | 6.47 | 4.55 | **-29.7% (better)** |
+| `avg_perplexity` | 4.56 | 4.55 | -0.2% |
+| `sanity_check` | 0.80 | -- | 4/5 tasks pass |
 | `quality_pass` | True | True | -- |
 
 <details>
@@ -113,11 +115,24 @@ The core pattern: **lock the evaluation, open the implementation, let an AI agen
 │  3. git commit                                              │
 │  4. python prepare.py > run.log 2>&1                        │
 │  5. Check: did avg_generation_tps improve?                  │
-│  6. Check: does quality_pass == True?                       │
+│  6. Check: quality_pass (perplexity + sanity_check)?        │
 │  7. If both YES → keep. If NO → git reset --hard HEAD~1    │
 │  8. Log results to results.tsv                              │
 │  9. Go to 1.                                                │
 └─────────────────────────────────────────────────────────────┘
+```
+
+When `prepare.py` runs, it also prints a **change monitor report** showing what the agent modified and any tradeoff warnings:
+
+```
+============================================================
+CHANGES FROM BASELINE
+============================================================
+  TEMP: 0.7 -> 0.0
+
+Tradeoff warnings:
+  - Argmax decoding: faster (no sampling) but deterministic, no diversity.
+============================================================
 ```
 
 | File | Role | Agent Can Edit? |
@@ -144,7 +159,24 @@ The agent can modify anything in `inference.py`:
 | `avg_generation_tps` | Higher is better | Decode tokens per second (primary) |
 | `avg_prompt_tps` | Higher is better | Prefill tokens per second |
 | `avg_peak_memory_gb` | Lower is better | Peak Metal memory usage |
-| `avg_perplexity` | Must stay below 50.0 | Quality gate — prevents speed hacks that destroy output |
+| `avg_perplexity` | Must stay below 50.0 | Quality gate — model-internal coherence score |
+| `sanity_check` | Must stay above 0.6 | Quality gate — task-level correctness (see below) |
+
+### Quality Gates
+
+An experiment is automatically reverted if **either** gate fails:
+
+- **Perplexity gate** (`avg_perplexity < 50.0`): Catches catastrophic quality collapse (e.g., 4-bit KV quantization spiked perplexity to 69,405).
+- **Sanity check gate** (`sanity_check >= 0.6`): Checks that outputs are actually correct — the math answer is right, the explanation mentions key concepts, the code contains a function definition. Each benchmark prompt has a content check; the score is the fraction that pass.
+
+The sanity checks for each benchmark prompt:
+| Prompt | Check |
+|---|---|
+| Transformers explanation | Mentions >= 2 of: attention, self-attention, token, layer |
+| Compiler optimization summary | Mentions >= 2 optimization passes (DCE, inlining, etc.) |
+| Train speed problem | Answer contains "48" (the correct answer: 48 km/h) |
+| Silicon/electricity poem | Multi-line + relevant keywords (silicon, chip, electric, etc.) |
+| LCS code generation | Contains `def` + relevant identifiers (subsequence, lcs, etc.) |
 
 ## Setup
 
