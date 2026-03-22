@@ -112,10 +112,10 @@ TRADEOFF_WARNINGS = {
         if new == "0.0" or new == "0" else None),
     "KV_BITS": lambda old, new: (
         f"KV cache quantized to {new}-bit. Saves memory but may degrade "
-        "quality on long sequences." if new not in ("None",) else None),
+        "quality on long sequences." if new not in ("None", "(removed)") else None),
     "MAX_KV_SIZE": lambda old, new: (
         f"Rotating KV cache ({new} tokens). Model forgets beyond this window."
-        if new != "None" else None),
+        if new not in ("None", "(removed)") else None),
     "MAX_TOKENS": lambda old, new: (
         f"Max tokens reduced ({old}->{new}). Speed gain may be artificial."
         if old.isdigit() and new.isdigit() and int(new) < int(old) else None),

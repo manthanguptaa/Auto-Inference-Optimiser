@@ -6,101 +6,53 @@ Point an AI coding agent at this repo and let it run experiments overnight — i
 
 ## Results: Claude Opus 4.6 Optimisation Runs
 
-### Run 1: 0.5B Model (main branch)
+### Run 3: 0.5B Model (with sanity checks)
 
 **Hardware:** MacBook Pro M4, 48GB RAM
 **Model:** `mlx-community/Qwen2.5-0.5B-Instruct-4bit` (0.5B params, 4-bit)
 **Agent:** Claude Opus 4.6 via Claude Code
-**Experiments:** 16 total, 5 kept, 11 reverted
+**Experiments:** 11 total, 2 kept, 9 reverted
 
 | Metric | Baseline | Optimised | Change |
 |---|---|---|---|
-| `avg_generation_tps` | 394.63 | 434.9 | **+10.2%** |
-| `avg_prompt_tps` | 2,691.26 | 3,180.0 | **+18.2%** |
-| `avg_peak_memory_gb` | 0.544 | 0.547 | +0.6% |
-| `avg_perplexity` | 6.38 | 6.05 | -5.2% (better) |
-| `sanity_check` | 0.80 | -- | 4/5 tasks pass |
+| `avg_generation_tps` | 394.97 | 437.17 | **+10.7%** |
+| `avg_prompt_tps` | 2,728.70 | 2,662.91 | -2.4% |
+| `avg_peak_memory_gb` | 0.544 | 0.544 | 0% |
+| `avg_perplexity` | 5.99 | 6.05 | +1.0% |
+| `sanity_check` | 0.80 | 0.80 | 0% (4/5 tasks pass) |
 | `quality_pass` | True | True | -- |
 
 <details>
 <summary>Full experiment log (0.5B)</summary>
 
-| # | Experiment | gen_tps | prompt_tps | ppl | Decision | Notes |
-|---|---|---|---|---|---|---|
-| 0 | **Baseline** (stream_generate, temp=0.7, top_p=0.9) | 397.0 | 2,467.7 | 8.49 | -- | Starting point |
-| 1 | Argmax sampling (temp=0.0, top_p=1.0) | **429.2** | 2,996.4 | 6.05 | **KEEP** | +8.1% — removes all sampling overhead |
-| 2 | Prefill step size 512 | 429.8 | 2,854.2 | 6.05 | REVERT | Within noise, prompt_tps dropped |
-| 3 | Custom generate loop (generate_step directly) | **433.6** | 3,160.1 | 6.05 | **KEEP** | +1% — bypasses stream_generate overhead |
-| 4 | Metal cache limit 1GB | **435.8** | 3,134.3 | 6.05 | **KEEP** | +0.5% — reduces buffer allocation churn |
-| 5 | mx.async_eval in decode loop | 425.8 | 3,125.1 | 6.05 | REVERT | -2.3% — .item() forces sync anyway |
-| 6 | Singleton sampler/EOS/memory caching | 429.2 | 3,299.0 | 6.05 | REVERT | -1.5% — indirection hurt more than caching helped |
-| 7 | 8-bit KV cache quantisation | 361.7 | 2,594.8 | 4.48 | REVERT | -17% — quant/dequant overhead exceeds bandwidth savings on small model |
-| 8 | MAX_TOKENS 128 | 435.5 | 3,170.2 | 6.44 | REVERT | gen_tps flat, memory better but not the target metric |
-| 9 | Metal cache limit 4GB | 427.8 | 3,256.7 | 6.05 | REVERT | -1.8% — larger cache caused more GC pressure |
-| 10 | Disable Python GC during generation | 430.9 | 3,279.9 | 6.05 | REVERT | -1.1% — GC not a bottleneck for small models |
-| 11 | Pre-build KV cache before generation | **435.8** | 3,131.1 | 6.05 | **KEEP** | Tighter variance (432-438 vs 407-440) |
-| 12 | Prefill step size 4096 | 435.2 | 3,180.8 | 6.05 | REVERT | No improvement over 2048 |
-| 13 | Pre-materialize model weights on Metal | **436.1** | 3,135.5 | 6.05 | **KEEP** | Marginal but consistent |
-| 14 | Fully custom forward loop (skip logprobs) | 339.7 | 3,438.3 | 6.05 | REVERT | -22% — lost generate_step's async pipelining |
-| 15 | Streamlined decode + raw argmax sampler | **434.9** | 3,180.0 | 6.05 | **KEEP** | Same speed, -19 lines — simplicity wins |
-| 16 | MAX_KV_SIZE=512 rotating cache | 434.5 | 3,347.4 | 6.05 | REVERT | Rotating cache overhead negated savings |
-
-</details>
-
-### Run 2: 3B Model (this branch)
-
-**Hardware:** MacBook Pro M4, 48GB RAM
-**Model:** `mlx-community/Qwen2.5-3B-Instruct-4bit` (3B params, 4-bit)
-**Agent:** Claude Opus 4.6 via Claude Code
-**Experiments:** 16 total, 3 kept, 13 reverted
-
-| Metric | Baseline | Optimised | Change |
-|---|---|---|---|
-| `avg_generation_tps` | 115.45 | 119.33 | **+3.4%** |
-| `avg_prompt_tps` | 645.45 | 628.01 | -2.7% |
-| `avg_peak_memory_gb` | 2.278 | 2.278 | 0% |
-| `avg_perplexity` | 4.56 | 4.55 | -0.2% |
-| `sanity_check` | 0.80 | -- | 4/5 tasks pass |
-| `quality_pass` | True | True | -- |
-
-<details>
-<summary>Full experiment log (3B)</summary>
-
-| # | Experiment | gen_tps | prompt_tps | mem_gb | ppl | Decision | Notes |
+| # | Experiment | gen_tps | prompt_tps | ppl | sanity | Decision | Tradeoff |
 |---|---|---|---|---|---|---|---|
-| 0 | **Baseline** (stream_generate, temp=0.7, top_p=0.9) | 115.96 | 634.68 | 2.278 | 6.47 | -- | Starting point |
-| 1 | Argmax sampling (temp=0.0, top_p=1.0) | **118.86** | 625.51 | 2.278 | 4.55 | **KEEP** | +2.5% — removes sampling overhead |
-| 2 | Custom generate loop (generate_step) | 105.6 | 77.8 | 1.768 | 4.55 | REVERT | -8.9% — manual timing conflates prefill+decode |
-| 3 | Metal cache limit 1GB | 118.94 | 625.08 | 2.278 | 4.55 | REVERT | Within noise (+0.07%) |
-| 4 | Metal cache limit 2GB | **119.03** | 637.34 | 2.278 | 4.55 | **KEEP** | Marginal gen_tps, +1.9% prompt_tps |
-| 5 | Prefill step size 512 | 119.24 | 627.28 | 2.278 | 4.55 | REVERT | Within noise, prompt_tps dropped |
-| 6 | Prefill step size 4096 | 119.14 | 628.77 | 2.278 | 4.55 | REVERT | Within noise |
-| 7 | 8-bit KV cache quantisation | 109.88 | 586.35 | 2.278 | 4.32 | REVERT | -7.7% — quant/dequant overhead exceeds bandwidth savings |
-| 8 | MAX_KV_SIZE=1024 rotating cache | 119.25 | 632.41 | 2.278 | 4.55 | REVERT | Within noise (+0.18%) |
-| 9 | Minimal code (singleton sampler, join) | **119.33** | 628.01 | 2.278 | 4.55 | **KEEP** | Same speed, 60% less code |
-| 10 | Metal cache limit 4GB | 119.45 | 610.24 | 2.278 | 4.55 | REVERT | prompt_tps dropped |
-| 11 | Remove Metal cache limit | 119.33 | 614.04 | 2.278 | 4.55 | REVERT | prompt_tps dropped vs 2GB limit |
-| 12 | Disable Python GC during generation | 119.21 | 622.58 | 2.278 | 4.55 | REVERT | GC not a bottleneck |
-| 13 | 4-bit KV cache quantisation | 120.51 | 595.26 | 2.266 | 69,405 | REVERT | **Quality gate FAILED** — perplexity exploded |
-| 14 | Pre-materialize model weights | 118.32 | 638.74 | 2.278 | 4.55 | REVERT | -0.8% — extra mx.eval overhead |
-| 15 | Prefill step size 1024 | 118.77 | 637.90 | 2.278 | 4.55 | REVERT | Within noise |
-| 16 | MAX_TOKENS=128 | 119.08 | 634.50 | 2.116 | 4.79 | REVERT | gen_tps within noise |
+| 0 | **Baseline** (stream_generate, temp=0.7, top_p=0.9) | 394.97 | 2,728.70 | 5.99 | 0.80 | -- | Starting point — no tradeoffs |
+| 1 | Argmax sampling (temp=0.0, top_p=1.0) | **437.55** | 2,600.19 | 6.05 | 0.80 | **KEEP** | +10.8% — deterministic output, no sampling diversity |
+| 2 | Metal cache limit 1GB | 436.51 | 2,571.70 | 6.05 | 0.80 | REVERT | No improvement over exp1 (-0.2%) |
+| 3 | Prefill step size 512 | 437.89 | 2,825.67 | 6.05 | 0.80 | REVERT | Within noise (+0.08%), smaller chunks add kernel launch overhead |
+| 4 | 8-bit KV cache quantisation | 366.51 | 2,134.13 | 4.48 | **0.40** | REVERT | **Sanity gate FAILED** (2/5 tasks) — reduced precision broke output quality. Perplexity alone (4.48) would have passed |
+| 5 | List join instead of string concat | 437.93 | 2,570.83 | 6.05 | 0.80 | REVERT | Within noise (+0.09%), no meaningful difference |
+| 6 | 4-bit KV cache quantisation | 371.98 | 2,059.42 | 602.14 | **0.20** | REVERT | **Both gates FAILED** — catastrophic quality collapse, perplexity 602, only 1/5 tasks pass |
+| 7 | Rotating KV cache 1024 tokens | 436.36 | 2,847.11 | 6.05 | 0.80 | REVERT | Slightly worse (-0.3%), model loses context beyond 1024 tokens |
+| 8 | Disable Python GC during generation | 437.80 | 2,780.20 | 6.05 | 0.80 | REVERT | Within noise (+0.06%), adds complexity for no gain |
+| 9 | Prefill step size 4096 | 437.05 | 2,805.26 | 6.05 | 0.80 | REVERT | Within noise (-0.1%), larger chunks use more peak memory |
+| 10 | Minimal code — singleton sampler, inline format, remove unused config | **437.17** | 2,662.91 | 6.05 | 0.80 | **KEEP** | Same speed, 42 fewer lines — simplicity wins |
+| 11 | MAX_TOKENS=128 | 440.01 | 2,625.50 | 6.44 | 0.80 | REVERT | Speed gain is artificial — model does less work, not faster work |
 
 </details>
 
-### Key Findings: 0.5B vs 3B
+### Key Findings
 
-1. **Smaller models have more optimisation headroom.** The 0.5B model gained +9.5% while the 3B model only gained +2.9%. The 3B model at ~119 tok/s is already at ~87% of the M4's theoretical memory bandwidth ceiling (~273 GB/s), leaving almost no room for software optimisation.
+1. **Argmax sampling is universally the biggest win.** +10.8% on 0.5B. Nucleus sampling (top-p) has real per-token overhead that scales with vocab size. Tradeoff: deterministic output, no diversity.
 
-2. **Argmax sampling is universally the biggest win.** +8.1% on 0.5B, +2.5% on 3B. Nucleus sampling (top-p) has real per-token overhead that scales with vocab size.
+2. **KV cache quantisation hurts and the sanity check catches it.** 8-bit KV was -16% speed _and_ dropped sanity_check to 0.40 (2/5 tasks pass). 4-bit was catastrophic: perplexity 602, sanity_check 0.20. Crucially, **perplexity alone would have passed the 8-bit experiment** (ppl=4.48 < 50.0) — only the sanity check gate caught the quality regression.
 
-3. **KV cache quantisation hurts at all scales tested.** 8-bit was -17% on 0.5B and -7.7% on 3B. 4-bit on 3B destroyed output quality (perplexity 69,405). The quant/dequant kernels add more overhead than they save in bandwidth for 4-bit weight models.
+3. **The memory bandwidth wall is real.** The 0.5B model at ~437 tok/s is already near the M4's bandwidth ceiling. Most experiments (prefill tuning, GC disable, list join) landed within measurement noise.
 
-4. **Custom generate loops are dangerous.** On 0.5B, bypassing stream_generate for generate_step directly gave +1%. On 3B, the same approach was -8.9% because manual timing conflated prefill and decode phases. The framework's internal metrics are more accurate.
+4. **Simplicity wins.** Removing 42 lines of unused config and helper functions maintained the same speed. Less code = less to review.
 
-5. **The memory bandwidth wall is real.** A 3B 4-bit model is ~2GB. At 119 tok/s, that's 238 GB/s — close to the M4's theoretical 273 GB/s. No amount of Python-level optimisation can push past this hardware limit.
-
-6. **Metal cache limit has a sweet spot per model.** 1GB was optimal for 0.5B (~350MB model), 2GB was optimal for 3B (~2GB model). The cache should roughly match the model size.
+5. **MAX_TOKENS reduction is artificial.** The change monitor correctly flagged exp11 — speed appeared to improve (+0.6%) only because the model generated fewer tokens, not because it generated them faster.
 
 ## How It Works
 
