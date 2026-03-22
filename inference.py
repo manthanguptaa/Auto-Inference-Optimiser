@@ -23,7 +23,7 @@ KV_BITS = None              # None=full precision, 4 or 8 for quantised KV cache
 KV_GROUP_SIZE = 64          # granularity of KV quantisation
 
 # Prefill settings
-PREFILL_STEP_SIZE = 2048    # tokens per prefill chunk
+PREFILL_STEP_SIZE = 512     # tokens per prefill chunk
 
 # Sampling settings
 TEMP = 0.0                  # 0.0=argmax (fastest), higher=more random
