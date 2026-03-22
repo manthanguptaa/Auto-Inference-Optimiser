@@ -18,7 +18,7 @@ from mlx_lm.sample_utils import make_sampler
 # ============================================================
 
 # KV cache settings
-MAX_KV_SIZE = 1024          # rotating cache — limits context to 1024 tokens
+MAX_KV_SIZE = None          # None=unbounded, or int for rotating cache
 KV_BITS = None              # None=full precision, 4 or 8 for quantised KV cache
 KV_GROUP_SIZE = 64          # granularity of KV quantisation
 
