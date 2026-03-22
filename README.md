@@ -42,17 +42,51 @@ Point an AI coding agent at this repo and let it run experiments overnight — i
 
 </details>
 
+### Run 4: 3B Model — Llama 3.2 (with sanity checks)
+
+**Hardware:** MacBook Pro M4, 48GB RAM
+**Model:** `mlx-community/Llama-3.2-3B-Instruct-4bit` (3B params, 4-bit)
+**Agent:** Claude Opus 4.6 via Claude Code
+**Experiments:** 8 total, 2 kept, 6 reverted
+
+| Metric | Baseline | Optimised | Change |
+|---|---|---|---|
+| `avg_generation_tps` | 115.55 | 118.10 | **+2.2%** |
+| `avg_prompt_tps` | 728.98 | 775.44 | **+6.4%** |
+| `avg_peak_memory_gb` | 2.314 | 2.314 | 0% |
+| `avg_perplexity` | 4.12 | 4.38 | +6.3% |
+| `sanity_check` | 0.87 | 0.80 | -8% (4/5 vs 13/15) |
+| `quality_pass` | True | True | -- |
+
+<details>
+<summary>Full experiment log (Llama 3.2 3B)</summary>
+
+| # | Experiment | gen_tps | prompt_tps | ppl | sanity | Decision | Tradeoff |
+|---|---|---|---|---|---|---|---|
+| 0 | **Baseline** (stream_generate, temp=0.7, top_p=0.9) | 115.55 | 728.98 | 4.12 | 0.87 | -- | Starting point — no tradeoffs |
+| 1 | Argmax sampling (temp=0.0, top_p=1.0) | **118.58** | 754.40 | 4.38 | 0.80 | **KEEP** | +2.6% — deterministic output, no sampling diversity. Sanity dropped 0.87→0.80 (math now consistently fails with greedy decoding) |
+| 2 | Metal cache limit 2GB | 118.32 | 737.89 | 4.38 | 0.80 | REVERT | Within noise (-0.2%), memory tuning doesn't help at this scale |
+| 3 | 8-bit KV cache quantisation | 112.00 | 695.77 | 4.38 | 0.80 | REVERT | -5.5% speed — quant/dequant overhead exceeds bandwidth savings |
+| 4 | 4-bit KV cache quantisation | 111.39 | 697.67 | 3.91 | 0.80 | REVERT | -6.1% speed — Llama handles 4-bit KV better than Qwen (no quality collapse) but still slower |
+| 5 | Rotating KV cache 1024 tokens | 118.36 | 749.25 | 4.38 | 0.80 | REVERT | Within noise (-0.2%), model forgets beyond window |
+| 6 | Prefill step size 512 | 118.04 | 761.34 | 4.38 | 0.80 | REVERT | Within noise (-0.5%), smaller chunks add kernel launch overhead |
+| 7 | Minimal code — singleton sampler, inline format, remove unused config | **118.10** | 775.44 | 4.38 | 0.80 | **KEEP** | Same speed, 42 fewer lines — simplicity wins |
+
+</details>
+
 ### Key Findings
 
-1. **Argmax sampling is universally the biggest win.** +10.8% on 0.5B. Nucleus sampling (top-p) has real per-token overhead that scales with vocab size. Tradeoff: deterministic output, no diversity.
+1. **Argmax sampling is universally the biggest win.** +10.8% on Qwen 0.5B, +2.6% on Llama 3B. Nucleus sampling (top-p) has real per-token overhead. Tradeoff: deterministic output, no diversity.
 
-2. **KV cache quantisation hurts and the sanity check catches it.** 8-bit KV was -16% speed _and_ dropped sanity_check to 0.40 (2/5 tasks pass). 4-bit was catastrophic: perplexity 602, sanity_check 0.20. Crucially, **perplexity alone would have passed the 8-bit experiment** (ppl=4.48 < 50.0) — only the sanity check gate caught the quality regression.
+2. **KV cache quantisation hurts — and the sanity check catches what perplexity misses.** On Qwen 0.5B, 8-bit KV dropped sanity_check to 0.40 (2/5 tasks pass) while perplexity stayed at 4.48 (would have passed the 50.0 threshold). 4-bit was catastrophic: perplexity 602, sanity_check 0.20. On Llama 3B, 4-bit KV didn't collapse quality (sanity 0.80) but still lost 6.1% speed. Architecture matters for quantization tolerance.
 
-3. **The memory bandwidth wall is real.** The 0.5B model at ~437 tok/s is already near the M4's bandwidth ceiling. Most experiments (prefill tuning, GC disable, list join) landed within measurement noise.
+3. **The memory bandwidth wall is real.** Both 3B models (~118 tok/s) and the 0.5B model (~437 tok/s) are near the M4's bandwidth ceiling. Most experiments landed within measurement noise.
 
-4. **Simplicity wins.** Removing 42 lines of unused config and helper functions maintained the same speed. Less code = less to review.
+4. **Results are consistent across model families.** Qwen and Llama show the same patterns: argmax wins, KV quantization loses speed, config tuning is noise, simplification is free.
 
-5. **MAX_TOKENS reduction is artificial.** The change monitor correctly flagged exp11 — speed appeared to improve (+0.6%) only because the model generated fewer tokens, not because it generated them faster.
+5. **Simplicity wins.** Removing 42 lines of unused config maintained the same speed on both models. Less code = less to review.
+
+6. **MAX_TOKENS reduction is artificial.** The change monitor correctly flagged this — speed appeared to improve only because the model generated fewer tokens, not faster.
 
 ## How It Works
 
