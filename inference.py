@@ -26,8 +26,8 @@ KV_GROUP_SIZE = 64          # granularity of KV quantisation
 PREFILL_STEP_SIZE = 2048    # tokens per prefill chunk
 
 # Sampling settings
-TEMP = 0.7                  # 0.0=argmax (fastest), higher=more random
-TOP_P = 0.9                 # nucleus sampling threshold
+TEMP = 0.0                  # 0.0=argmax (fastest), higher=more random
+TOP_P = 1.0                 # nucleus sampling threshold
 TOP_K = 0                   # 0=disabled, else restrict to top-K tokens
 MIN_P = 0.0                 # minimum probability relative to top token
 REPETITION_PENALTY = 1.0    # 1.0=disabled
